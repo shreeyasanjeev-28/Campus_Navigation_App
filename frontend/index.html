@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Campus Navigation System</title>
+
+  <!-- ✅ Leaflet CSS & JS -->
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+  />
+  <script
+    src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+  ></script>
+
+  <!-- ✅ Leaflet Routing Machine -->
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.css"
+  />
+  <script
+    src="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.min.js"
+  ></script>
+
+  <style>
+    body { margin: 0; font-family: "Poppins", sans-serif; background-color: #f0f2f5; }
+    header { background: linear-gradient(90deg, #0078d7, #00b4d8); color: white; text-align: center; padding: 15px; font-size: 1.4rem; font-weight: bold; letter-spacing: 1px; box-shadow: 0 2px 6px rgba(0,0,0,0.2); }
+    #container { display: flex; height: calc(100vh - 60px); }
+    #sidebar { width: 320px; background-color: white; border-right: 1px solid #ddd; box-shadow: 2px 0 10px rgba(0,0,0,0.1); display: flex; flex-direction: column; justify-content: space-between; padding: 20px; }
+    #roleSelect { width: 100%; padding: 8px; font-size: 14px; border: 1px solid #ccc; border-radius: 6px; margin-bottom: 10px; }
+    .panel { display: none; flex-direction: column; gap: 10px; }
+    .panel.active { display: flex; }
+    label { font-size: 14px; font-weight: 600; }
+    select, input, button { padding: 8px; border-radius: 5px; border: 1px solid #ccc; font-size: 14px; }
+    button { background-color: #0078d7; color: white; border: none; cursor: pointer; transition: background 0.3s ease; }
+    button:hover { background-color: #005fa3; }
+    #map { flex-grow: 1; height: 100%; width: 100%; }
+    footer { text-align: center; font-size: 12px; padding: 8px; color: gray; }
+    .small { font-size: 13px; color: #444; }
+    .divider { height: 1px; background:#eee; margin:10px 0; }
+    #loginStatus { font-size:13px; color:green; }
+  </style>
+</head>
+<body>
+  <header>🏫 Campus Navigation System</header>
+
+  <div id="container">
+    <div id="sidebar">
+      <div>
+        <label for="roleSelect">Select Role:</label>
+        <select id="roleSelect" onchange="switchRole()">
+          <option value="" disabled selected>Select your role</option>
+          <option value="student">Student</option>
+          <option value="visitor">Visitor</option>
+          <option value="admin">Admin</option>
+        </select>
+
+        <!-- Student / Visitor Panel -->
+        <div id="studentPanel" class="panel">
+          <label>Start:</label>
+          <select id="startSelect"></select>
+
+          <label>Destination:</label>
+          <select id="endSelect"></select>
+
+          <button onclick="showPath()">Show Path</button>
+          <button onclick="resetMap()">Reset</button>
+        </div>
+
+        <!-- Admin Panel -->
+        <div id="adminPanel" class="panel">
+          <div id="authArea">
+            <label>Admin Login</label>
+            <input type="text" id="adminUser" placeholder="Username" />
+            <input type="password" id="adminPass" placeholder="Password" />
+            <button onclick="adminLogin()">Login</button>
+            <div class="divider"></div>
+          </div>
+
+          <div id="adminActions" style="display:none;">
+            <div class="small">Logged in as <span id="loginUser"></span> — <a href="#" onclick="adminLogout()">Logout</a></div>
+
+            <label>New Location Name:</label>
+            <input type="text" id="newName" placeholder="e.g. Civil Dept" />
+
+            <label>Latitude:</label>
+            <input type="number" step="any" id="newLat" placeholder="e.g. 12.8245" />
+
+            <label>Longitude:</label>
+            <input type="number" step="any" id="newLng" placeholder="e.g. 80.0455" />
+
+            <button onclick="addNewLocation()">Add Location</button>
+          </div>
+        </div>
+      </div>
+
+      <footer>© 2025 Campus Navigation Project</footer>
+    </div>
+
+    <div id="map"></div>
+  </div>
+
+  <!-- ✅ Custom Script (must come last) -->
+  <script>
+    const API_BASE = "http://localhost:5000";
+
+    let map, locations = {}, markers = [], routeControl = null;
+
+    window.onload = () => {
+      map = L.map("map").setView([12.823, 80.045], 17);
+      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        attribution: "&copy; OpenStreetMap contributors",
+      }).addTo(map);
+
+      fetchLocations();
+
+      // Restore login
+      const token = localStorage.getItem("camp_nav_token");
+      const user = localStorage.getItem("camp_nav_user");
+      if (token && user) {
+        document.getElementById("loginUser").innerText = user;
+        document.getElementById("authArea").style.display = "none";
+        document.getElementById("adminActions").style.display = "block";
+      }
+    };
+
+    async function fetchLocations() {
+      try {
+        const res = await fetch(API_BASE + "/locations");
+        const data = await res.json();
+        locations = {};
+        data.forEach(loc => locations[loc.id] = loc);
+        populateDropdowns();
+        loadMarkers();
+      } catch (e) {
+        console.error("Failed to load locations:", e);
+      }
+    }
+
+    function populateDropdowns() {
+      const start = document.getElementById("startSelect");
+      const end = document.getElementById("endSelect");
+      start.innerHTML = ""; end.innerHTML = "";
+      for (const id in locations) {
+        const opt1 = new Option(locations[id].name, id);
+        const opt2 = new Option(locations[id].name, id);
+        start.add(opt1);
+        end.add(opt2);
+      }
+    }
+
+    function loadMarkers() {
+      markers.forEach(m => map.removeLayer(m));
+      markers = [];
+      for (const id in locations) {
+        const loc = locations[id];
+        const marker = L.marker([loc.latitude, loc.longitude]).addTo(map);
+        marker.bindPopup("<b>" + loc.name + "</b>");
+        markers.push(marker);
+      }
+    }
+
+    async function showPath() {
+      const start = document.getElementById("startSelect").value;
+      const end = document.getElementById("endSelect").value;
+
+      if (!start || !end) return alert("Please select both start and destination.");
+      if (start === end) return alert("Start and destination cannot be the same.");
+
+      const startLoc = locations[start];
+      const endLoc = locations[end];
+
+      if (!startLoc || !endLoc) return alert("Invalid locations selected.");
+
+      if (routeControl) map.removeControl(routeControl);
+
+      // ✅ Use real-world routing between coordinates
+      routeControl = L.Routing.control({
+        waypoints: [
+          L.latLng(startLoc.latitude, startLoc.longitude),
+          L.latLng(endLoc.latitude, endLoc.longitude)
+        ],
+        routeWhileDragging: false,
+        addWaypoints: false,
+        draggableWaypoints: false,
+        fitSelectedRoutes: true,
+        show: false,
+        lineOptions: {
+          styles: [{ color: 'blue', weight: 5, opacity: 0.8 }]
+        },
+        router: L.Routing.osrmv1({
+          serviceUrl: 'https://router.project-osrm.org/route/v1'
+        })
+      }).addTo(map);
+    }
+
+    function resetMap() {
+      if (routeControl) map.removeControl(routeControl);
+      routeControl = null;
+      map.setView([12.823, 80.045], 17);
+    }
+
+    function switchRole() {
+      const role = document.getElementById("roleSelect").value;
+      document.getElementById("studentPanel").classList.toggle("active", role === "student" || role === "visitor");
+      document.getElementById("adminPanel").classList.toggle("active", role === "admin");
+    }
+
+    async function adminLogin() {
+      const user = document.getElementById("adminUser").value.trim();
+      const pass = document.getElementById("adminPass").value;
+      if (!user || !pass) return alert("Enter username and password");
+      try {
+        const res = await fetch(API_BASE + "/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username: user, password: pass })
+        });
+        const data = await res.json();
+        if (data.token) {
+          localStorage.setItem("camp_nav_token", data.token);
+          localStorage.setItem("camp_nav_user", user);
+          document.getElementById("loginUser").innerText = user;
+          document.getElementById("authArea").style.display = "none";
+          document.getElementById("adminActions").style.display = "block";
+          alert("Login successful");
+        } else {
+          alert(data.error || "Login failed");
+        }
+      } catch (e) {
+        console.error("Login error:", e);
+        alert("Login request failed");
+      }
+    }
+
+    async function addNewLocation() {
+      const name = document.getElementById("newName").value.trim();
+      const lat = parseFloat(document.getElementById("newLat").value);
+      const lng = parseFloat(document.getElementById("newLng").value);
+      if (!name || isNaN(lat) || isNaN(lng)) return alert("Please fill all fields correctly.");
+
+      const token = localStorage.getItem("camp_nav_token");
+      if (!token) return alert("Admin not logged in.");
+
+      try {
+        const res = await fetch(API_BASE + "/add-location", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-auth-token": token },
+          body: JSON.stringify({ name, latitude: lat, longitude: lng })
+        });
+        const data = await res.json();
+        if (data.message) {
+          alert(data.message);
+          document.getElementById("newName").value = "";
+          document.getElementById("newLat").value = "";
+          document.getElementById("newLng").value = "";
+          fetchLocations();
+        } else {
+          alert(data.error || "Failed to add location");
+        }
+      } catch (e) {
+        console.error("Add location error:", e);
+        alert("Request failed");
+      }
+    }
+
+    function adminLogout() {
+      localStorage.removeItem("camp_nav_token");
+      localStorage.removeItem("camp_nav_user");
+      document.getElementById("authArea").style.display = "block";
+      document.getElementById("adminActions").style.display = "none";
+    }
+  </script>
+</body>
+</html>
+
